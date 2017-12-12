@@ -1,0 +1,256 @@
+---
+title: "Assignment 3 - Part 2 - Diagnosing Schizophrenia from Voice"
+author: "Astrid Ledager, Sofie Frandsen & Kristian Isen"
+date: "October 17, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pacman)
+p_load(lmerTest, modelr, stringr, tidyverse, caret, cvTools, Metrics, ggplot2, pROC, e1071, boot)
+
+```
+
+## Assignment 3 - Diagnosing schizophrenia from voice
+
+In the previous part of the assignment you generated a bunch of "features", that is, of quantitative descriptors of voice in schizophrenia, focusing on pitch.
+In the course of this assignment we will use them to try to automatically diagnose schizophrenia from voice only, that is, relying on the set of features you produced last time, we will try to produce an automated classifier.
+
+### Question 1
+Build a logistic regression to see whether you can diagnose schizophrenia from pitch range only.
+```{r}
+getwd()
+locpath=getwd()
+setwd(locpath)
+data = read.csv("~/Desktop/ExpMeth3_Assignments/Assignment3_KristianIsen/dfstudy1")
+
+
+logmodel = glmer(diagnosis ~ 1 + range + (1|study), data = data, family = binomial)
+
+summary(logmodel)
+#significant, so you can diagnose schizophrenia from pith range??
+value1 = exp(-0.753926)
+inv.logit(value1)
+```
+
+
+Calculate the different performance measures (accuracy, sensitivity, specificity, PPV, NPV, ROC curve) on a logistic regression using the full dataset. Don't forget the random effects!
+```{r}
+#confusion matrix
+data$PredictionsPerc = predict(logmodel)
+data$Predictions[data$PredictionsPerc > 0] = "1"
+data$Predictions[data$PredictionsPerc <= 0] = "0"
+confMatrix = confusionMatrix(data = data$Predictions, reference = data$diagnosis, positive = "1")
+confMatrix
+
+confMatrix$overall["Accuracy"]
+confMatrix$byClass["Sensitivity"]
+confMatrix$byClass["Specificity"]
+
+#ROCcurve
+rocCurve = roc(response = data$diagnosis, predictor = data$PredictionsPerc)
+?auc()
+auc(rocCurve)
+
+ci(rocCurve)
+
+plot(rocCurve, legacy.axes = TRUE)
+```
+
+
+Then cross-validate the logistic regression and re-calculate performance on the testing folds. N.B. The cross-validation functions you already have should be tweaked: you need to calculate these new performance measures.
+```{r}
+data$Subject = as.factor(data$Subject)
+data$foldsID = as.numeric(data$Subject)
+folds = createFolds(unique(data$foldsID), k = 5)
+accu = NULL
+sens = NULL
+spec = NULL
+auc = NULL
+
+n = 1
+
+for(i in folds){
+  train = subset(data, !(data$foldsID %in% i))
+  test = subset(data, data$foldsID %in% i)
+
+  newlogmodel = glmer(diagnosis ~ 1 + range + (1|study), data = train, family = binomial)
+  
+  newpred = predict(newlogmodel, newdata = test, allow.new.levels = TRUE)
+  
+  newpred = data.frame(PredictionsPerc = newpred, observed = test$diagnosis)
+  
+  data$Predictions[newpred$PredictionsPerc > 0] = "1"
+  data$Predictions[newpred$PredictionsPerc <= 0] = "0"
+  cm = confusionMatrix(data = data$Predictions, reference = data$diagnosis, positive = "1")
+  
+  accu[n] = cm$overall["Accuracy"]
+  sens[n] = cm$byClass["Sensitivity"]
+  spec[n] = cm$byClass["Specificity"]
+  
+  roc = roc(response = test$diagnosis, predictor = newpred$PredictionsPerc)
+  auc[n] = auc(roc)
+  
+  n = n+1
+}
+
+mean(accu) 
+mean(sens)
+mean(spec)
+mean(auc)
+```
+
+
+N.B. the predict() function generates log odds (the full scale between minus and plus infinity). Log odds > 0 indicates a choice of 1, below a choice of 0.
+N.B. you need to decide whether calculate performance on each single test fold or save all the prediction for test folds in one datase, so to calculate overall performance.
+N.B. Now you have two levels of structure: subject and study. Should this impact your cross-validation?
+
+### Question 2
+
+Which single predictor is the best predictor of diagnosis? 
+
+```{r}
+
+allmodels = list("trial" = "diagnosis ~ 1 + trial + (1|study)", "range" = "diagnosis ~ 1 + range + (1|study)", "PR" = "diagnosis ~ 1 + PR + (1|study)", "DET" = "diagnosis ~ 1 + DET + (1|study)", "NRLINE" = "diagnosis ~ 1 + NRLINE + (1|study)", "maxL" = "diagnosis ~ 1 + maxL + (1|study)", "L" = "diagnosis ~ 1 + L + (1|study)", "ENTR" = "diagnosis ~ 1 + ENTR + (1|study)", "LAM" = "diagnosis ~ 1 + LAM + (1|study)", "TT" = "diagnosis ~ 1 + TT + (1|study)", "mean" = "diagnosis ~ 1 + mean + (1|study)")
+
+
+folds = createFolds(unique(data$foldsID), k = 5)
+
+testing = function(modelstring, data, foldsID, folds) {
+  
+    n = 1
+    
+    rm(DF)
+    
+    for(i in folds){
+      print(i)
+      train = subset(data, !(data$foldsID %in% i))
+      test = subset(data, data$foldsID %in% i)
+      
+      models = glmer(modelstring, data = train, family = binomial)
+      
+      newpred = predict(models, newdata = test, allow.new.levels = TRUE)
+      
+      if(exists("DF")) {
+        DF = rbind(DF,data.frame(PredictionsPerc = newpred, observed = test$diagnosis)) 
+      }else { DF = data.frame(PredictionsPerc = newpred, observed = test$diagnosis)
+      }
+      
+    }
+      DF$Predictions[DF$PredictionsPerc > 0] = "1"
+      DF$Predictions[DF$PredictionsPerc <= 0] = "0"
+      cm = confusionMatrix(data = DF$Predictions, reference = DF$observed, positive = "1")
+      
+      
+      accu[n] = cm$overall["Accuracy"]
+      sens[n] = cm$byClass["Sensitivity"]
+      spec[n] = cm$byClass["Specificity"]
+      
+      roc = roc(response = DF$observed, predictor = DF$PredictionsPerc)
+      auc[n]= auc(roc)
+      
+      return(data.frame(accu = mean(accu),sens = mean(sens),spec = mean(spec),auc = mean(auc), row.names = modelstring))
+      
+      n = n + 1
+  
+    }
+
+trialm = testing(modelstring = allmodels$trial, data = data, foldsID = foldsID, folds = folds)
+rangem = testing(modelstring = allmodels$range, data = data, foldsID = foldsID, folds = folds)
+PRm = testing(modelstring = allmodels$PR, data = data, foldsID = foldsID, folds = folds)
+DETm = testing(modelstring = allmodels$DET, data = data, foldsID = foldsID, folds = folds)
+NRLINEm = testing(modelstring = allmodels$NRLINE, data = data, foldsID = foldsID, folds = folds)
+maxLm = testing(modelstring = allmodels$maxL, data = data, foldsID = foldsID, folds = folds)
+Lm = testing(modelstring = allmodels$L, data = data, foldsID = foldsID, folds = folds)
+ENTRm = testing(modelstring = allmodels$ENTR, data = data, foldsID = foldsID, folds = folds)
+LAMm = testing(modelstring = allmodels$LAM, data = data, foldsID = foldsID, folds = folds)
+TTm = testing(modelstring = allmodels$TT, data = data, foldsID = foldsID, folds = folds)
+meanm = testing(modelstring = allmodels$mean, data = data, foldsID = foldsID, folds = folds)
+
+
+allm = rbind(trialm, rangem, PRm, DETm, NRLINEm, maxLm, Lm, ENTRm, LAMm, TTm, meanm, make.row.names = TRUE)
+
+```
+TT has the highest AUC, so it is the best single predictor of diagnosis.
+
+*when extracting the perf. features. only look at AUC from the test-data*
+
+### Question 3
+
+Now it's time to go wild! Use all (voice-related) variables and interactions you can think of. Compare models and select the best performing model you can find.
+
+Remember:
+- Out-of-sample error crucial to build the best model!
+- After choosing the model, send Celine and Riccardo the code of your model
+```{r}
+allmodels2 = list("PRDET" = "diagnosis ~ 1 + PR*DET + (1|study)", "ENTRTT" = "diagnosis ~ 1 + ENTR*TT + (1|study)", "ENTRmaxL" = "diagnosis ~ 1 + ENTR*maxL + (1|study)", "LAML" = "diagnosis ~ 1 + LAM*L + (1|study)", "TTPR" = "diagnosis ~ 1 + TT*PR + (1|study)", "LDET" = "diagnosis ~ 1 + L*DET + (1|study)")
+
+
+folds = createFolds(unique(data$foldsID), k = 5)
+
+testing = function(modelstring, data, foldsID, folds) {
+  
+    n = 1
+    
+    rm(DF)
+    
+    for(i in folds){
+      print(i)
+      train = subset(data, !(data$foldsID %in% i))
+      test = subset(data, data$foldsID %in% i)
+      
+      models = glmer(modelstring, data = train, family = binomial)
+      
+      newpred = predict(models, newdata = test, allow.new.levels = TRUE)
+      
+      if(exists("DF")) {
+        DF = rbind(DF,data.frame(PredictionsPerc = newpred, observed = test$diagnosis)) 
+      }else { DF = data.frame(PredictionsPerc = newpred, observed = test$diagnosis)
+      }
+      
+    }
+      DF$Predictions[DF$PredictionsPerc > 0] = "1"
+      DF$Predictions[DF$PredictionsPerc <= 0] = "0"
+      cm = confusionMatrix(data = DF$Predictions, reference = DF$observed, positive = "1")
+      
+      
+      accu[n] = cm$overall["Accuracy"]
+      sens[n] = cm$byClass["Sensitivity"]
+      spec[n] = cm$byClass["Specificity"]
+      
+      roc = roc(response = DF$observed, predictor = DF$PredictionsPerc)
+      auc[n]= auc(roc)
+      
+      return(data.frame(accu = mean(accu),sens = mean(sens),spec = mean(spec),auc = mean(auc), row.names = modelstring))
+      
+      n = n + 1
+  
+    }
+
+PRDETm = testing(modelstring = allmodels2$PRDET, data = data, foldsID = foldsID, folds = folds)
+ENTRTTm = testing(modelstring = allmodels2$ENTRTT, data = data, foldsID = foldsID, folds = folds)
+ENTRmaxLm = testing(modelstring = allmodels2$ENTRmaxL, data = data, foldsID = foldsID, folds = folds)
+LAMLm = testing(modelstring = allmodels2$LAML, data = data, foldsID = foldsID, folds = folds)
+TTPRm = testing(modelstring = allmodels2$TTPR, data = data, foldsID = foldsID, folds = folds)
+LDETm = testing(modelstring = allmodels2$LDET, data = data, foldsID = foldsID, folds = folds)
+
+allm2 = rbind(PRDETm, ENTRTTm, ENTRmaxLm, LAMLm, TTPRm, LDETm, make.row.names = TRUE)
+
+```
+TT*PR has the highest AUC, so the model with interaction between TT and PR is the best.
+
+
+### Question 4: Report the results
+
+METHODS SECTION: how did you analyse the data?
+we extracted these acoustic features
+created these models
+compared the models in the form of AUC
+report winning model: after doing that the best model was model x. this was the performance on the model.
+comment on: which kind of errors does the model make (sensitivity >< specificity)
+comment on the acoustic features that were selected: what does it mean that this feature is best?
+AUC is a more robust way to assess how good the model is
+
+RESULTS SECTION: can you diagnose schizophrenia based on voice? which features are used? Comment on the difference between the different performance measures.
+
